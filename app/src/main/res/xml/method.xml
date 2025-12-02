@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:isDefault="false"
+    android:supportsSwitchingToNextInputMethod="true"
+    android:imeExtractEnterAnimation="@anim/slide_in_bottom"
+    android:imeExtractExitAnimation="@anim/slide_out_bottom"
+
+    android:settingsActivity="com.example.grammai.MainActivity">
+
+</input-method>
