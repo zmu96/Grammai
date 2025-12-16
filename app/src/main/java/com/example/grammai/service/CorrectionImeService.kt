@@ -1,6 +1,7 @@
 package com.example.grammai.ime
 
 import android.inputmethodservice.InputMethodService
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -10,6 +11,15 @@ import android.widget.LinearLayout
 import com.example.grammai.R
 import com.example.grammai.hangul.HangulCombiner
 
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import android.os.Handler
+import android.os.Looper
+import java.io.IOException
+
+
 class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
     private lateinit var inputView: View
@@ -18,13 +28,28 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     private lateinit var symbolLayout1: LinearLayout
     private lateinit var symbolLayout2: LinearLayout
 
+    private lateinit var btnMemo: Button
+    private lateinit var btnCorrect: Button
+
+    private lateinit var memoLayout: LinearLayout
+    private lateinit var memoEditText: android.widget.EditText
+
+    private lateinit var shiftHangulBtn: Button
+    private lateinit var shiftEnglishBtn: Button
+
+    private var isMemoMode = false
+
+    private val sentenceBuffer = StringBuilder()
+
     private val combiner = HangulCombiner()
 
     private var isHangulMode = true
     private var isSymbolMode = false
     private var symbolPage = 1
-    private var isShifted: Boolean = false
 
+    private var isShifted = false          // 기존
+    private var isCapsLock = false         // 🔥 추가
+    private var lastShiftTapTime = 0L      // 🔥 추가
 
     // -----------------------------
     // 🔥 추가된 부분: 새 입력창 시작할 때 조합 완전 종료
@@ -46,6 +71,8 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         val ic = currentInputConnection ?: return
         ic.finishComposingText()
         combiner.resetJaso()
+
+        sentenceBuffer.clear()
     }
 
     // -----------------------------
@@ -61,11 +88,16 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     }
 
 
+    override fun onCreate() {
+        super.onCreate()
+      //  Log.d("IME_CHECK", "IME onCreate")
+    }
 
     // -----------------------------
     // InputView 생성
     // -----------------------------
     override fun onCreateInputView(): View {
+
         val inflater = LayoutInflater.from(this)
 
         inputView = inflater.inflate(R.layout.ime_keyboard_all_modes, null)
@@ -74,6 +106,52 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         englishLayout = inputView.findViewById(R.id.layout_english)
         symbolLayout1 = inputView.findViewById(R.id.layout_symbol1)
         symbolLayout2 = inputView.findViewById(R.id.layout_symbol2)
+
+        shiftHangulBtn = inputView.findViewById(R.id.key_h_shift)
+        shiftEnglishBtn = inputView.findViewById(R.id.key_e_shift)
+
+
+        // ✅ TopBar 버튼 연결
+        btnMemo = inputView.findViewById(R.id.btn_memo)
+        btnCorrect = inputView.findViewById(R.id.btn_correct)
+
+        btnCorrect.setOnClickListener(this)
+
+        memoLayout = inputView.findViewById(R.id.layout_memo)
+        memoEditText = inputView.findViewById(R.id.edit_memo)
+
+        btnMemo.setOnClickListener {
+            if (isMemoMode) {
+                hideMemo()
+            } else {
+                showMemo()
+            }
+        }
+
+
+
+        // 🔥 모든 키의 "원본 텍스트"를 tag에 저장
+        fun saveBaseKeyText(view: View) {
+            if (view is LinearLayout) {
+                for (i in 0 until view.childCount) {
+                    saveBaseKeyText(view.getChildAt(i))
+                }
+            } else if (view is Button) {
+                if (view.tag == null) {
+                    val text = view.text.toString()
+                    view.tag = if (!isHangulMode && text.length == 1 && text[0].isLetter()) {
+                        text.lowercase()
+                    } else {
+                        text
+                    }
+                }
+            }
+
+        }
+
+        saveBaseKeyText(inputView)
+
+
 
         bindButtons(hangulLayout)
         bindButtons(englishLayout)
@@ -85,6 +163,65 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
         return inputView
     }
+
+    private fun updateShiftButtonUI() {
+        val isOn = isShifted || isCapsLock
+
+        val activeColor = getColor(R.color.key_shift_active)
+        val normalColor = getColor(R.color.key_function_background)
+
+        shiftHangulBtn.setBackgroundColor(if (isOn) activeColor else normalColor)
+        shiftEnglishBtn.setBackgroundColor(if (isOn) activeColor else normalColor)
+    }
+
+
+    private fun syncSentenceBufferWithEditor() {
+        val ic = currentInputConnection ?: return
+        val extracted = ic.getExtractedText(
+            android.view.inputmethod.ExtractedTextRequest(),
+            0
+        ) ?: return
+
+        val currentText = extracted.text?.toString() ?: ""
+
+        if (currentText.isEmpty()) {
+            sentenceBuffer.clear()
+        }
+    }
+
+
+    private fun showMemo() {
+        syncSentenceBufferWithEditor()
+        isMemoMode = true
+
+        // 조합 완전 종료
+        commitRemaining()
+        currentInputConnection?.finishComposingText()
+
+        // 키보드 숨김
+        hangulLayout.visibility = View.GONE
+        englishLayout.visibility = View.GONE
+        symbolLayout1.visibility = View.GONE
+        symbolLayout2.visibility = View.GONE
+
+        // 메모 표시
+        memoLayout.visibility = View.VISIBLE
+
+        // 🔥 STEP 3
+        memoEditText.setText(sentenceBuffer.toString())
+        memoEditText.setSelection(memoEditText.text.length)
+    }
+
+    private fun hideMemo() {
+        isMemoMode = false
+
+        // 메모 숨김
+        memoLayout.visibility = View.GONE
+
+        // 키보드 복원
+        updateLayoutVisibility()
+    }
+
 
     private fun updateLayoutVisibility() {
         hangulLayout.visibility = if (isHangulMode && !isSymbolMode) View.VISIBLE else View.GONE
@@ -114,6 +251,9 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         val text = btn.text.toString()
         val ic = currentInputConnection ?: return
 
+
+      //  Log.d("IME_CHECK", "onClick entered, id=${btn.id}")
+
         // 🔥 조합 강제 종료 추가
         if (btn.id in listOf(
                 R.id.key_h_hangul_english, R.id.key_e_hangul_english,
@@ -123,20 +263,56 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                 R.id.key_s1_hangul_keyboard, R.id.key_s2_hangul_keyboard
             )) {
 
-            ic.finishComposingText()           // 🔥 추가
-            if (combiner.getComposingText().isNotEmpty()) {
-                ic.commitText(combiner.getComposingText(), 1)
-            }
-            combiner.resetJaso()
-        }
+            val composing = combiner.getComposingText()
+            if (composing.isNotEmpty()) {
+                ic.commitText(composing, 1)
 
+                // 🔥 STEP 3 핵심: 버퍼 동기화
+                sentenceBuffer.append(composing)
+            }
+            ic.finishComposingText()
+            combiner.resetJaso()
+
+        }
+      //  Log.d("IME_CHECK", "BEFORE when, id=${btn.id}")
         when (btn.id) {
 
             R.id.key_h_shift, R.id.key_e_shift -> {
-                isShifted = !isShifted
-                inputView.let { updateButtonText(it) }
+
+                val now = System.currentTimeMillis()
+                val DOUBLE_TAP_DELAY = 400L
+
+                // 🔒 1. Caps Lock ON → Shift 누르면 Caps Lock OFF
+                if (isCapsLock) {
+                    isCapsLock = false
+                    isShifted = false
+                    lastShiftTapTime = 0L
+                }
+                // 🔥 2. 빠른 2연타 → Caps Lock ON
+                else if (lastShiftTapTime != 0L && now - lastShiftTapTime < DOUBLE_TAP_DELAY) {
+                    isCapsLock = true
+                    isShifted = true
+                    lastShiftTapTime = 0L
+                }
+                // 🔹 3. Shift ON 상태에서 다시 누름 → Shift OFF
+                else if (isShifted) {
+                    isShifted = false
+                    lastShiftTapTime = 0L
+                }
+                // 🔸 4. Shift OFF → Shift 1회용 ON
+                else {
+                    isShifted = true
+                    lastShiftTapTime = now
+                }
+
+                updateShiftButtonUI()
+                updateButtonText(inputView)
                 return
             }
+
+
+
+
 
             R.id.key_h_hangul_english, R.id.key_e_hangul_english,
             R.id.key_s1_hangul_english, R.id.key_s2_mode_change -> {
@@ -209,10 +385,90 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                 return
             }
 
+            R.id.btn_correct -> {
+            //    Log.d("IME_CHECK", "ENTERED btn_correct branch")
+                val composing = combiner.getComposingText()
+                if (composing.isNotEmpty()) {
+                    ic.commitText(composing, 1)
+                    sentenceBuffer.append(composing)
+                    combiner.resetJaso()
+                }
+                ic.finishComposingText()
+
+                val originalSentence = sentenceBuffer.toString()
+
+             //   Log.d("IME_CHECK", "SentenceBuffer='$originalSentence'")
+
+                if (originalSentence.isBlank()) return
+
+                requestCorrectionFromServer(originalSentence) { corrected ->
+
+                  //  Log.d("IME_CHECK", "Corrected result='$corrected'")
+
+                    ic.deleteSurroundingText(originalSentence.length, 0)
+                    ic.commitText(corrected, 1)
+
+                    sentenceBuffer.clear()
+                    sentenceBuffer.append(corrected)
+                }
+
+                return
+            }
+
+
+
             else -> {
                 handleCharacter(text, ic)
             }
         }
+    }
+
+    /* =====================================================
+   🔥 서버 교정 요청 함수 (여기에 그대로 붙여넣기)
+   ===================================================== */
+
+    private val httpClient = OkHttpClient()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun requestCorrectionFromServer(
+        originalText: String,
+        onResult: (String) -> Unit
+    ) {
+        val json = JSONObject()
+        json.put("text", originalText)
+
+        val body = json.toString()
+            .toRequestBody("application/json".toMediaType())
+
+        val request = Request.Builder()
+            .url("http://115.23.150.161:8000/correct")
+            .post(body)
+            .build()
+
+        httpClient.newCall(request).enqueue(object : Callback {
+
+            override fun onFailure(call: Call, e: IOException) {
+               // Log.e("IME_CHECK", "Network Error: ${e.message}")
+
+                mainHandler.post {
+                    onResult(originalText)
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val responseBody = response.body?.string()
+                val corrected = try {
+                    JSONObject(responseBody ?: "")
+                        .getString("corrected")
+                } catch (e: Exception) {
+                    originalText
+                }
+
+                mainHandler.post {
+                    onResult(corrected)
+                }
+            }
+        })
     }
 
 
@@ -227,16 +483,27 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             return
         }
         ic.deleteSurroundingText(1, 0)
+
+        // 🔥 STEP 3
+        if (sentenceBuffer.isNotEmpty()) {
+            sentenceBuffer.deleteCharAt(sentenceBuffer.length - 1)
+        }
     }
 
     private fun handleSpace(ic: InputConnection) {
         commitRemaining()
         ic.commitText(" ", 1)
+
+        // 🔥 STEP 3
+        sentenceBuffer.append(" ")
     }
 
     private fun handleEnter(ic: InputConnection) {
         commitRemaining()
         ic.commitText("\n", 1)
+
+        // 🔥 STEP 3
+        sentenceBuffer.append("\n")
     }
 
 
@@ -245,61 +512,87 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     // -----------------------------
     private fun handleCharacter(text: String, ic: InputConnection) {
         var input = text
-        if (isShifted) {
-            input = if (isHangulMode) HangulCombiner.getShiftedHangulJaso(text)
-            else text.uppercase()
 
-            isShifted = false
+        // 1️⃣ Shift 또는 Caps Lock이 켜져 있으면 문자 변형
+        if (isShifted || isCapsLock) {
+            input = if (isHangulMode)
+                HangulCombiner.getShiftedHangulJaso(text)
+            else
+                text.uppercase()
         }
 
         if (!isHangulMode || isSymbolKey(input)) {
             commitRemaining()
             ic.commitText(input, 1)
+            sentenceBuffer.append(input)
+
+            // 🔥 Shift 1회용 자동 해제 (Caps Lock 아닐 때)
+            if (isShifted && !isCapsLock) {
+                isShifted = false
+                updateButtonText(inputView)
+                updateShiftButtonUI()
+            }
             return
         }
 
-        val result = combiner.inputJaso(input)
-        if (result.commit.isNotEmpty()) ic.commitText(result.commit, 1)
 
+        val result = combiner.inputJaso(input)
+        if (result.commit.isNotEmpty()) {
+            ic.commitText(result.commit, 1)
+
+            // 🔥 STEP 3 (조건 안으로 이동)
+            sentenceBuffer.append(result.commit)
+        }
         val composingText = result.composing
         if (composingText.isNotEmpty()) ic.setComposingText(composingText, 1)
         else ic.finishComposingText()
+
+        // 3️⃣ Shift 1회용 자동 해제 (Caps Lock이 아닐 때만)
+        if (isShifted && !isCapsLock) {
+            isShifted = false
+            updateButtonText(inputView)
+            updateShiftButtonUI()
+        }
     }
+
+
 
     private fun commitRemaining() {
         val ic = currentInputConnection ?: return
         val remain = combiner.finishComposing()
 
-        // ❌ 잘못된 finishComposingText / setComposingText 제거
-
-        if (remain != null) {
+       if (remain != null) {
             ic.commitText(remain, 1)
+
+           // 🔥 STEP 3
+           sentenceBuffer.append(remain)
         }
 
         combiner.resetJaso()
     }
 
     private fun isSymbolKey(text: String): Boolean {
-        return text.length == 1 &&
-                !Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
-                    .equals(Character.UnicodeBlock.of(text[0]))
+        if (text.length != 1) return false
+
+        val c = text[0]
+
+        return !c.isLetterOrDigit() &&
+                Character.UnicodeBlock.of(c) != Character.UnicodeBlock.HANGUL_SYLLABLES &&
+                Character.UnicodeBlock.of(c) != Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
     }
+
 
 
     // -----------------------------
     // 버튼 텍스트 업데이트
     // -----------------------------
     private fun updateButtonText(view: View) {
-        if (view is LinearLayout) {
+        if (view is android.view.ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)
                 if (child is LinearLayout) updateButtonText(child)
                 else if (child is Button) {
 
-                    if (child.id == R.id.key_h_shift || child.id == R.id.key_e_shift) {
-                        child.isActivated = isShifted
-                        continue
-                    }
 
                     if (child.id in listOf(
                             R.id.key_h_delete, R.id.key_e_delete, R.id.key_s1_delete, R.id.key_s2_delete,
@@ -320,14 +613,24 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                         continue
                     }
 
-                    val originalText = child.text.toString()
+                    val baseText = child.tag as? String ?: child.text.toString()
+
                     val newText = when {
-                        isShifted && isHangulMode -> HangulCombiner.getShiftedHangulJaso(originalText)
-                        isShifted && !isHangulMode -> originalText.uppercase()
-                        !isShifted && isHangulMode -> HangulCombiner.getUnshiftedHangulJaso(originalText) ?: originalText
-                        else -> originalText.lowercase()
+                        isShifted && isHangulMode ->
+                            HangulCombiner.getShiftedHangulJaso(baseText)
+
+                        isShifted && !isHangulMode ->
+                            baseText.uppercase()
+
+                        !isShifted && isHangulMode ->
+                            HangulCombiner.getUnshiftedHangulJaso(baseText) ?: baseText
+
+                        else ->
+                            baseText.lowercase()
                     }
+
                     child.text = newText
+
                 }
             }
         }

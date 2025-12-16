@@ -1,16 +1,19 @@
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <item android:state_activated="true">
+    <!-- 🔥 Shift ON / Caps Lock ON -->
+    <item android:state_selected="true">
         <shape android:shape="rectangle">
             <solid android:color="@color/key_shift_active"/>
             <corners android:radius="4dp"/>
         </shape>
     </item>
 
+    <!-- 기본 상태 -->
     <item>
         <shape android:shape="rectangle">
             <solid android:color="@color/key_function_background"/>
             <corners android:radius="4dp"/>
         </shape>
     </item>
+
 </selector>

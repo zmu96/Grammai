@@ -9,12 +9,18 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
 
 // 이 Activity는 앱을 실행했을 때 나타나며, 사용자에게 키보드를 활성화하도록 안내합니다.
 class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 🔥 [추가] 앱 실행 시 ONNX 모델 1회 복사
+        copyOnnxOnce()
 
         // 화면 구성을 위한 레이아웃 설정 (Compose 코드는 제거하고 View 시스템 사용)
         val mainLayout = LinearLayout(this).apply {
@@ -41,16 +47,14 @@ class MainActivity : AppCompatActivity() {
         }
         mainLayout.addView(enableButton)
 
-// 2. 기본 키보드 선택 버튼 (필수 2단계)
+        // 2. 기본 키보드 선택 버튼 (필수 2단계)
         val selectButton = Button(this).apply {
             text = "2단계: 기본 키보드로 [한글 교정 키보드] 선택"
 
-            // 💡 [수정] 버튼 생성 시, LayoutParams를 명시적으로 생성하여 할당합니다.
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                // 💡 이제 안전하게 topMargin을 설정할 수 있습니다.
                 topMargin = 30
             }
 
@@ -64,5 +68,31 @@ class MainActivity : AppCompatActivity() {
         setContentView(mainLayout)
 
         Toast.makeText(this, "키보드 설정을 완료해야 앱이 작동합니다.", Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * 🔥 앱 프로세스에서 단 1번만 ONNX 모델 복사
+     * IME에서는 절대 복사하면 안 됨
+     */
+    private fun copyOnnxOnce() {
+        val modelFile = File(filesDir, "kot5_spellcheck_int8.onnx")
+
+        if (modelFile.exists()) {
+            return
+        }
+
+        Thread {
+            try {
+
+                assets.open("kot5_spellcheck_int8.onnx").use { input ->
+                    FileOutputStream(modelFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+            } catch (e: Exception) {
+             //   Log.e("IME_CHECK", "ONNX copy failed", e)
+            }
+        }.start()
     }
 }
