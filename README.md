@@ -49,8 +49,8 @@ Grammai는 유니코드 조합 규칙을 직접 구현한 상태 기반 한글 �
 <details> <summary><b>📌 HangulCombiner 설계 및 동작 원리</b></summary> <br/>
 🧠 한글 입력 조합 엔진 (HangulCombiner)
 
-    Grammai 키보드는 Android 기본 IME의 내부 구현에 의존하지 않고,
-    한글 조합 로직을 직접 구현한 커스텀 한글 입력 엔진을 사용합니다.
+ Grammai 키보드는 Android 기본 IME의 내부 구현에 의존하지 않고,
+ 한글 조합 로직을 직접 구현한 커스텀 한글 입력 엔진을 사용합니다.
 
 이 엔진은 초성·중성·종성 상태를 직접 관리하며,
 유니코드 한글 조합 규칙을 기반으로 **실시간 입력, 분해, 재조합, 확정(commit)**을 처리합니다.
