@@ -57,19 +57,23 @@ Grammai의 맞춤법 교정 기능은 외부 서버에서 동작합니다.
 ```bash
 python -m venv venv
 venv\Scripts\activate
+
 2️⃣ 의존성 설치
 
 bash
 코드 복사
 pip install -r requirements.txt
+
 3️⃣ FastAPI 서버 실행
 
 bash
 코드 복사
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+```
 서버가 정상 실행되면,
 IME에서 교정 버튼 클릭 시 교정 결과를 확인할 수 있습니다.
-```
+
 <br/>
 🧠 핵심 기술 요약
 ✅ 한 줄 핵심
