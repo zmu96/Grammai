@@ -29,14 +29,47 @@ AI Server	FastAPI, PyTorch
 Build Tool	Gradle
 IDE	Android Studio
 <br/>
-📦 실행 방법
+## 1️⃣ Android IME 실행 (기본 키보드 기능)
+
+```bash
 git clone https://github.com/zmu96/Grammai.git
+Android Studio로 프로젝트 열기
 
+Gradle Sync
 
-1️⃣ Android Studio로 프로젝트 열기
-2️⃣ Gradle Sync
-3️⃣ 설정 → 키보드/입력기 → Grammai 활성화
+설정 → 키보드 / 입력기 → Grammai 활성화
+```
+※ 이 단계까지는 기본 키보드 입력 기능만 사용 가능하며,
+AI 맞춤법 교정 기능은 서버 실행이 필요합니다.
 
+---
+
+### 🤖 AI 맞춤법 교정 서버 실행 (추가)
+
+```md
+## 2️⃣ AI 맞춤법 교정 서버 실행 (선택)
+
+Grammai의 맞춤법 교정 기능은 외부 서버에서 동작합니다.
+
+### 서버 실행 방법
+
+1️⃣ 가상환경 생성 및 활성화
+```bash
+python -m venv venv
+venv\Scripts\activate
+2️⃣ 의존성 설치
+
+bash
+코드 복사
+pip install -r requirements.txt
+3️⃣ FastAPI 서버 실행
+
+bash
+코드 복사
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+서버가 정상 실행되면,
+IME에서 교정 버튼 클릭 시 교정 결과를 확인할 수 있습니다.
+```
 <br/>
 🧠 핵심 기술 요약
 ✅ 한 줄 핵심
