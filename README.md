@@ -44,7 +44,7 @@ git clone https://github.com/zmu96/Grammai.git
 Grammai는 유니코드 조합 규칙을 직접 구현한 상태 기반 한글 입력 엔진과,
 서버 기반 AI 맞춤법 교정 구조를 결합한 커스텀 Android IME 프로젝트입니다.
 
-<img width="1078" height="1616" alt="image" src="https://github.com/user-attachments/assets/87b67bf1-318e-4448-8823-b0e6d8aad640" />
+<img width="350" height="1616" alt="image" src="https://github.com/user-attachments/assets/87b67bf1-318e-4448-8823-b0e6d8aad640" />
 
 
 <br/>
