@@ -1,4 +1,4 @@
-<img width="1078" height="1616" alt="image" src="https://github.com/user-attachments/assets/9640e279-9e40-4cf9-9259-2209931df10e" />⌨️ Grammai
+⌨️ Grammai
 AI 기반 한국어 맞춤법 교정 Android 키보드 (IME)
 <br/>
 📖 프로젝트 개요
