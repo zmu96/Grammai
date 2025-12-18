@@ -1,4 +1,4 @@
-⌨️ Grammai
+<img width="1078" height="1616" alt="image" src="https://github.com/user-attachments/assets/9640e279-9e40-4cf9-9259-2209931df10e" />⌨️ Grammai
 AI 기반 한국어 맞춤법 교정 Android 키보드 (IME)
 <br/>
 📖 프로젝트 개요
@@ -43,6 +43,9 @@ git clone https://github.com/zmu96/Grammai.git
 
 Grammai는 유니코드 조합 규칙을 직접 구현한 상태 기반 한글 입력 엔진과,
 서버 기반 AI 맞춤법 교정 구조를 결합한 커스텀 Android IME 프로젝트입니다.
+
+<img width="1078" height="1616" alt="image" src="https://github.com/user-attachments/assets/87b67bf1-318e-4448-8823-b0e6d8aad640" />
+
 
 <br/>
 🔽 한글 입력 조합 엔진 (상세)
