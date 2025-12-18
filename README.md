@@ -55,19 +55,20 @@ Grammai의 맞춤법 교정 기능은 외부 서버에서 동작합니다.
 
 1️⃣ 가상환경 생성 및 활성화
 ```bash
+
 python -m venv venv
 venv\Scripts\activate
 
 2️⃣ 의존성 설치
 
 bash
-코드 복사
+
 pip install -r requirements.txt
 
 3️⃣ FastAPI 서버 실행
 
 bash
-코드 복사
+
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 ```
