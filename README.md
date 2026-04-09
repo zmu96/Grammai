@@ -85,6 +85,7 @@ Grammai는 유니코드 조합 규칙을 직접 구현한 상태 기반 한글 �
 <img width="350" height="1616" alt="image" src="https://github.com/user-attachments/assets/87b67bf1-318e-4448-8823-b0e6d8aad640" />
 
 
+
 <br/>
 🔽 한글 입력 조합 엔진 (상세)
 <details> <summary><b>📌 HangulCombiner 설계 및 동작 원리</b></summary> <br/>
