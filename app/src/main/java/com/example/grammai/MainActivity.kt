@@ -1,4 +1,3 @@
-// MainActivity.kt
 package com.example.grammai
 
 import android.content.Intent
@@ -13,19 +12,36 @@ import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 
-// 이 Activity는 앱을 실행했을 때 나타나며, 사용자에게 키보드를 활성화하도록 안내합니다.
+/**
+ * 앱 진입점 Activity
+ * ONNX 모델을 1회 복사하고 사용자에게 IME 활성화를 안내합니다.
+ */
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val MODEL_FILENAME = "kot5_spellcheck_int8.onnx"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d(TAG, "✅ MainActivity onCreate")
 
-        // 🔥 [추가] 앱 실행 시 ONNX 모델 1회 복사
-        copyOnnxOnce()
+        // ONNX 모델 1회 복사
+        copyOnnxModelOnce()
 
-        // 화면 구성을 위한 레이아웃 설정 (Compose 코드는 제거하고 View 시스템 사용)
+        // UI 구성
+        setupUI()
+
+        Toast.makeText(this, "키보드 설정을 완료해야 앱이 작동합니다.", Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * 메인 UI 레이아웃 설정
+     */
+    private fun setupUI() {
         val mainLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            // padding을 dp 대신 pixel로 지정하지만, 간단한 예시이므로 하드코딩
             setPadding(60, 60, 60, 60)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -33,66 +49,115 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 1. 키보드 활성화 설정으로 이동 버튼 (필수 1단계)
+        // 1단계: 키보드 활성화
         val enableButton = Button(this).apply {
             text = "1단계: 설정에서 [한글 교정 키보드] 활성화"
             setOnClickListener {
-                // 사용자를 안드로이드 설정 -> 언어 및 입력 -> 키보드 관리 화면으로 보냅니다.
                 try {
                     startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+                    Log.d(TAG, "📱 IME Settings opened")
                 } catch (e: Exception) {
-                    Toast.makeText(this@MainActivity, "설정 화면을 열 수 없습니다.", Toast.LENGTH_SHORT).show()
+                    Log.e(TAG, "❌ Failed to open settings", e)
+                    Toast.makeText(
+                        this@MainActivity,
+                        "설정 화면을 열 수 없습니다.",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
         mainLayout.addView(enableButton)
 
-        // 2. 기본 키보드 선택 버튼 (필수 2단계)
+        // 2단계: 기본 키보드 선택
         val selectButton = Button(this).apply {
             text = "2단계: 기본 키보드로 [한글 교정 키보드] 선택"
-
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = 30
             }
-
             setOnClickListener {
-                val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                imm.showInputMethodPicker()
+                try {
+                    val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.showInputMethodPicker()
+                    Log.d(TAG, "🎹 IME Picker shown")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Failed to show IME picker", e)
+                    Toast.makeText(
+                        this@MainActivity,
+                        "IME 선택 화면을 열 수 없습니다.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
         mainLayout.addView(selectButton)
 
         setContentView(mainLayout)
-
-        Toast.makeText(this, "키보드 설정을 완료해야 앱이 작동합니다.", Toast.LENGTH_LONG).show()
     }
 
     /**
-     * 🔥 앱 프로세스에서 단 1번만 ONNX 모델 복사
-     * IME에서는 절대 복사하면 안 됨
+     * 앱 프로세스에서 단 1회만 ONNX 모델을 내부 저장소로 복사
+     * 
+     * ⚠️ IME 서비스에서는 절대 복사하면 안 됨 (시스템 성능 저하)
      */
-    private fun copyOnnxOnce() {
-        val modelFile = File(filesDir, "kot5_spellcheck_int8.onnx")
+    private fun copyOnnxModelOnce() {
+        val modelFile = File(filesDir, MODEL_FILENAME)
 
+        // 이미 존재하면 반환
         if (modelFile.exists()) {
+            Log.d(TAG, "✅ ONNX model already exists: ${modelFile.absolutePath}")
             return
         }
 
-        Thread {
-            try {
+        try {
+            Log.i(TAG, "📥 Starting ONNX model copy from assets...")
 
-                assets.open("kot5_spellcheck_int8.onnx").use { input ->
-                    FileOutputStream(modelFile).use { output ->
-                        input.copyTo(output)
-                    }
+            // 동기로 복사 (UI 스레드 블로킹 방지를 위해 필요시 백그라운드 스레드 사용)
+            val copiedBytes = assets.open(MODEL_FILENAME).use { input ->
+                FileOutputStream(modelFile).use { output ->
+                    input.copyTo(output)
                 }
-
-            } catch (e: Exception) {
-             //   Log.e("IME_CHECK", "ONNX copy failed", e)
             }
-        }.start()
+
+            // 검증
+            validateModelFile(modelFile, copiedBytes)
+
+            Log.i(TAG, "✅ ONNX model successfully copied: $copiedBytes bytes")
+
+        } catch (e: IOException) {
+            Log.e(TAG, "❌ Failed to copy ONNX model", e)
+            showModelLoadErrorDialog(e)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Unexpected error while copying ONNX model", e)
+            showModelLoadErrorDialog(e)
+        }
+    }
+
+    /**
+     * 복사된 모델 파일 검증
+     */
+    private fun validateModelFile(modelFile: File, expectedSize: Long) {
+        if (!modelFile.exists()) {
+            throw IOException("❌ Model file was not created")
+        }
+        if (modelFile.length() == 0L) {
+            throw IOException("❌ Model file is empty (0 bytes)")
+        }
+        if (modelFile.length() != expectedSize) {
+            Log.w(TAG, "⚠️ Model file size mismatch. Expected: $expectedSize, Got: ${modelFile.length()}")
+        }
+    }
+
+    /**
+     * 모델 로드 실패 시 사용자에게 알림
+     */
+    private fun showModelLoadErrorDialog(e: Exception) {
+        Toast.makeText(
+            this,
+            "모델 로드 실패: ${e.message ?: "Unknown error"}\n앱을 재설치하세요.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 }
