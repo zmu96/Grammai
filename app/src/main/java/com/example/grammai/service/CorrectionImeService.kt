@@ -18,7 +18,17 @@ import org.json.JSONObject
 import android.os.Handler
 import android.os.Looper
 import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
 
+
+// 서버 설정 상수화
+object ServerConfig {
+    const val BASE_URL = "https://api.grammai.com"
+    const val CONNECT_TIMEOUT_SECONDS = 10L
+    const val READ_TIMEOUT_SECONDS = 15L
+    const val WRITE_TIMEOUT_SECONDS = 10L
+}
 
 class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
@@ -47,55 +57,62 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     private var isSymbolMode = false
     private var symbolPage = 1
 
-    private var isShifted = false          // 기존
-    private var isCapsLock = false         // 🔥 추가
-    private var lastShiftTapTime = 0L      // 🔥 추가
+    private var isShifted = false
+    private var isCapsLock = false
+    private var lastShiftTapTime = 0L
 
-    // -----------------------------
-    // 🔥 추가된 부분: 새 입력창 시작할 때 조합 완전 종료
-    // -----------------------------
-    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
-        super.onStartInput(attribute, restarting)
+    // Coroutines 스코프
+    private val scope = CoroutineScope(
+        Dispatchers.Main + Job() + CoroutineExceptionHandler { _, exception ->
+            Log.e("CorrectionIme", "Coroutine error", exception)
+        }
+    )
 
-        val ic = currentInputConnection ?: return
-        ic.finishComposingText()
-        combiner.resetJaso()
+    // 타임아웃이 설정된 OkHttpClient
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(ServerConfig.CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(ServerConfig.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(ServerConfig.WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Null 안전성을 위한 확장 함수
+    private inline fun withInputConnection(block: (InputConnection) -> Unit) {
+        currentInputConnection?.let(block)
     }
 
-    // -----------------------------
-    // 🔥 추가된 부분: 입력창 종료될 때 조합 완전 종료
-    // -----------------------------
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        withInputConnection { ic ->
+            ic.finishComposingText()
+            combiner.resetJaso()
+        }
+    }
+
     override fun onFinishInput() {
         super.onFinishInput()
-
-        val ic = currentInputConnection ?: return
-        ic.finishComposingText()
-        combiner.resetJaso()
-
+        withInputConnection { ic ->
+            ic.finishComposingText()
+            combiner.resetJaso()
+        }
         sentenceBuffer.clear()
     }
 
-    // -----------------------------
-    // 🔥 추가된 부분: 키보드 UI가 다시 보여질 때 조합 완전 종료
-    // (키보드 내렸다 올릴 때 반드시 호출됨)
-    // -----------------------------
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-
-        val ic = currentInputConnection
-        ic?.finishComposingText()
-        combiner.resetJaso()
+        withInputConnection { ic ->
+            ic.finishComposingText()
+            combiner.resetJaso()
+        }
     }
-
 
     override fun onCreate() {
         super.onCreate()
-      //  Log.d("IME_CHECK", "IME onCreate")
     }
 
-    // -----------------------------
-    // InputView 생성
-    // -----------------------------
     override fun onCreateInputView(): View {
 
         val inflater = LayoutInflater.from(this)
@@ -110,8 +127,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         shiftHangulBtn = inputView.findViewById(R.id.key_h_shift)
         shiftEnglishBtn = inputView.findViewById(R.id.key_e_shift)
 
-
-        // ✅ TopBar 버튼 연결
         btnMemo = inputView.findViewById(R.id.btn_memo)
         btnCorrect = inputView.findViewById(R.id.btn_correct)
 
@@ -128,9 +143,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             }
         }
 
-
-
-        // 🔥 모든 키의 "원본 텍스트"를 tag에 저장
         fun saveBaseKeyText(view: View) {
             if (view is LinearLayout) {
                 for (i in 0 until view.childCount) {
@@ -146,12 +158,9 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                     }
                 }
             }
-
         }
 
         saveBaseKeyText(inputView)
-
-
 
         bindButtons(hangulLayout)
         bindButtons(englishLayout)
@@ -174,7 +183,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         shiftEnglishBtn.setBackgroundColor(if (isOn) activeColor else normalColor)
     }
 
-
     private fun syncSentenceBufferWithEditor() {
         val ic = currentInputConnection ?: return
         val extracted = ic.getExtractedText(
@@ -189,25 +197,19 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         }
     }
 
-
     private fun showMemo() {
         syncSentenceBufferWithEditor()
         isMemoMode = true
 
-        // 조합 완전 종료
-        commitRemaining()
-        currentInputConnection?.finishComposingText()
+        finishComposingAndSync()
 
-        // 키보드 숨김
         hangulLayout.visibility = View.GONE
         englishLayout.visibility = View.GONE
         symbolLayout1.visibility = View.GONE
         symbolLayout2.visibility = View.GONE
 
-        // 메모 표시
         memoLayout.visibility = View.VISIBLE
 
-        // 🔥 STEP 3
         memoEditText.setText(sentenceBuffer.toString())
         memoEditText.setSelection(memoEditText.text.length)
     }
@@ -215,13 +217,10 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     private fun hideMemo() {
         isMemoMode = false
 
-        // 메모 숨김
         memoLayout.visibility = View.GONE
 
-        // 키보드 복원
         updateLayoutVisibility()
     }
-
 
     private fun updateLayoutVisibility() {
         hangulLayout.visibility = if (isHangulMode && !isSymbolMode) View.VISIBLE else View.GONE
@@ -241,226 +240,210 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         }
     }
 
-
-    // -----------------------------
-    // 키 입력 처리
-    // -----------------------------
-    override fun onClick(v: View?) {
-
-        val btn = v as? Button ?: return
-        val text = btn.text.toString()
-        val ic = currentInputConnection ?: return
-
-
-      //  Log.d("IME_CHECK", "onClick entered, id=${btn.id}")
-
-        // 🔥 조합 강제 종료 추가
-        if (btn.id in listOf(
-                R.id.key_h_hangul_english, R.id.key_e_hangul_english,
-                R.id.key_s1_hangul_english, R.id.key_s2_mode_change,
-                R.id.key_h_symbol_change, R.id.key_e_symbol_change,
-                R.id.key_s1_symbol_change, R.id.key_s2_symbol_change,
-                R.id.key_s1_hangul_keyboard, R.id.key_s2_hangul_keyboard
-            )) {
-
+    // 공통 메서드: 조합 완료 및 동기화
+    private fun finishComposingAndSync() {
+        withInputConnection { ic ->
             val composing = combiner.getComposingText()
             if (composing.isNotEmpty()) {
                 ic.commitText(composing, 1)
-
-                // 🔥 STEP 3 핵심: 버퍼 동기화
                 sentenceBuffer.append(composing)
             }
             ic.finishComposingText()
             combiner.resetJaso()
-
-        }
-      //  Log.d("IME_CHECK", "BEFORE when, id=${btn.id}")
-        when (btn.id) {
-
-            R.id.key_h_shift, R.id.key_e_shift -> {
-
-                val now = System.currentTimeMillis()
-                val DOUBLE_TAP_DELAY = 400L
-
-                // 🔒 1. Caps Lock ON → Shift 누르면 Caps Lock OFF
-                if (isCapsLock) {
-                    isCapsLock = false
-                    isShifted = false
-                    lastShiftTapTime = 0L
-                }
-                // 🔥 2. 빠른 2연타 → Caps Lock ON
-                else if (lastShiftTapTime != 0L && now - lastShiftTapTime < DOUBLE_TAP_DELAY) {
-                    isCapsLock = true
-                    isShifted = true
-                    lastShiftTapTime = 0L
-                }
-                // 🔹 3. Shift ON 상태에서 다시 누름 → Shift OFF
-                else if (isShifted) {
-                    isShifted = false
-                    lastShiftTapTime = 0L
-                }
-                // 🔸 4. Shift OFF → Shift 1회용 ON
-                else {
-                    isShifted = true
-                    lastShiftTapTime = now
-                }
-
-                updateShiftButtonUI()
-                updateButtonText(inputView)
-                return
-            }
-
-
-
-
-
-            R.id.key_h_hangul_english, R.id.key_e_hangul_english,
-            R.id.key_s1_hangul_english, R.id.key_s2_mode_change -> {
-                ic.finishComposingText()   // 🔥 추가
-                isHangulMode = !isHangulMode
-                isSymbolMode = false
-                updateLayoutVisibility()
-                inputView.let { updateButtonText(it) }
-                return
-            }
-
-            R.id.key_h_symbol_change, R.id.key_e_symbol_change -> {
-                ic.finishComposingText()   // 🔥 추가
-                isSymbolMode = true
-                symbolPage = 1
-                updateLayoutVisibility()
-                inputView.let { updateButtonText(it) }
-                return
-            }
-
-            R.id.key_s1_symbol_change -> {
-                ic.finishComposingText()   // 🔥 추가
-                symbolPage = 2
-                updateLayoutVisibility()
-                inputView.let { updateButtonText(it) }
-                return
-            }
-
-            R.id.key_s2_symbol_change -> {
-                ic.finishComposingText()   // 🔥 추가
-                symbolPage = 1
-                updateLayoutVisibility()
-                inputView.let { updateButtonText(it) }
-                return
-            }
-
-            R.id.key_h_delete, R.id.key_e_delete, R.id.key_s1_delete, R.id.key_s2_delete -> {
-                handleDelete(ic)
-                return
-            }
-
-            R.id.key_h_space, R.id.key_e_space, R.id.key_s1_space, R.id.key_s2_space -> {
-                handleSpace(ic)
-                return
-            }
-
-            R.id.key_h_enter, R.id.key_e_enter, R.id.key_s1_enter, R.id.key_s2_enter -> {
-                handleEnter(ic)
-                return
-            }
-
-            R.id.key_h_comma, R.id.key_e_comma, R.id.key_s1_comma2, R.id.key_s2_comma -> {
-                commitRemaining()
-                ic.commitText(",", 1)
-                return
-            }
-
-            R.id.key_h_period, R.id.key_e_period, R.id.key_s1_period, R.id.key_s2_period -> {
-                commitRemaining()
-                ic.commitText(".", 1)
-                return
-            }
-
-            R.id.key_s1_hangul_keyboard, R.id.key_s2_hangul_keyboard -> {
-                ic.finishComposingText()    // 🔥 추가
-                isHangulMode = true
-                isSymbolMode = false
-                updateLayoutVisibility()
-                inputView.let { updateButtonText(it) }
-                return
-            }
-
-            R.id.btn_correct -> {
-            //    Log.d("IME_CHECK", "ENTERED btn_correct branch")
-                val composing = combiner.getComposingText()
-                if (composing.isNotEmpty()) {
-                    ic.commitText(composing, 1)
-                    sentenceBuffer.append(composing)
-                    combiner.resetJaso()
-                }
-                ic.finishComposingText()
-
-                val originalSentence = sentenceBuffer.toString()
-
-             //   Log.d("IME_CHECK", "SentenceBuffer='$originalSentence'")
-
-                if (originalSentence.isBlank()) return
-
-                requestCorrectionFromServer(originalSentence) { corrected ->
-
-                  //  Log.d("IME_CHECK", "Corrected result='$corrected'")
-
-                    ic.deleteSurroundingText(originalSentence.length, 0)
-                    ic.commitText(corrected, 1)
-
-                    sentenceBuffer.clear()
-                    sentenceBuffer.append(corrected)
-                }
-
-                return
-            }
-
-
-
-            else -> {
-                handleCharacter(text, ic)
-            }
         }
     }
 
-    /* =====================================================
-   🔥 서버 교정 요청 함수 (여기에 그대로 붙여넣기)
-   ===================================================== */
+    override fun onClick(v: View?) {
 
-    private val httpClient = OkHttpClient()
-    private val mainHandler = Handler(Looper.getMainLooper())
+        val btn = v as? Button ?: return
+        val text = btn.text.toString()
+
+        withInputConnection { ic ->
+            // 모드 변경 키들에 대해 공통 처리
+            if (btn.id in listOf(
+                    R.id.key_h_hangul_english, R.id.key_e_hangul_english,
+                    R.id.key_s1_hangul_english, R.id.key_s2_mode_change,
+                    R.id.key_h_symbol_change, R.id.key_e_symbol_change,
+                    R.id.key_s1_symbol_change, R.id.key_s2_symbol_change,
+                    R.id.key_s1_hangul_keyboard, R.id.key_s2_hangul_keyboard
+                )) {
+                finishComposingAndSync()
+            }
+
+            when (btn.id) {
+
+                R.id.key_h_shift, R.id.key_e_shift -> {
+
+                    val now = System.currentTimeMillis()
+                    val DOUBLE_TAP_DELAY = 400L
+
+                    if (isCapsLock) {
+                        isCapsLock = false
+                        isShifted = false
+                        lastShiftTapTime = 0L
+                    } else if (lastShiftTapTime != 0L && now - lastShiftTapTime < DOUBLE_TAP_DELAY) {
+                        isCapsLock = true
+                        isShifted = true
+                        lastShiftTapTime = 0L
+                    } else if (isShifted) {
+                        isShifted = false
+                        lastShiftTapTime = 0L
+                    } else {
+                        isShifted = true
+                        lastShiftTapTime = now
+                    }
+
+                    updateShiftButtonUI()
+                    updateButtonText(inputView)
+                    return@withInputConnection
+                }
+
+                R.id.key_h_hangul_english, R.id.key_e_hangul_english,
+                R.id.key_s1_hangul_english, R.id.key_s2_mode_change -> {
+                    isHangulMode = !isHangulMode
+                    isSymbolMode = false
+                    updateLayoutVisibility()
+                    inputView.let { updateButtonText(it) }
+                    return@withInputConnection
+                }
+
+                R.id.key_h_symbol_change, R.id.key_e_symbol_change -> {
+                    isSymbolMode = true
+                    symbolPage = 1
+                    updateLayoutVisibility()
+                    inputView.let { updateButtonText(it) }
+                    return@withInputConnection
+                }
+
+                R.id.key_s1_symbol_change -> {
+                    symbolPage = 2
+                    updateLayoutVisibility()
+                    inputView.let { updateButtonText(it) }
+                    return@withInputConnection
+                }
+
+                R.id.key_s2_symbol_change -> {
+                    symbolPage = 1
+                    updateLayoutVisibility()
+                    inputView.let { updateButtonText(it) }
+                    return@withInputConnection
+                }
+
+                R.id.key_h_delete, R.id.key_e_delete, R.id.key_s1_delete, R.id.key_s2_delete -> {
+                    handleDelete(ic)
+                    return@withInputConnection
+                }
+
+                R.id.key_h_space, R.id.key_e_space, R.id.key_s1_space, R.id.key_s2_space -> {
+                    handleSpace(ic)
+                    return@withInputConnection
+                }
+
+                R.id.key_h_enter, R.id.key_e_enter, R.id.key_s1_enter, R.id.key_s2_enter -> {
+                    handleEnter(ic)
+                    return@withInputConnection
+                }
+
+                R.id.key_h_comma, R.id.key_e_comma, R.id.key_s1_comma2, R.id.key_s2_comma -> {
+                    commitRemaining()
+                    ic.commitText(",", 1)
+                    return@withInputConnection
+                }
+
+                R.id.key_h_period, R.id.key_e_period, R.id.key_s1_period, R.id.key_s2_period -> {
+                    commitRemaining()
+                    ic.commitText(".", 1)
+                    return@withInputConnection
+                }
+
+                R.id.key_s1_hangul_keyboard, R.id.key_s2_hangul_keyboard -> {
+                    isHangulMode = true
+                    isSymbolMode = false
+                    updateLayoutVisibility()
+                    inputView.let { updateButtonText(it) }
+                    return@withInputConnection
+                }
+
+                R.id.btn_correct -> {
+                    val composing = combiner.getComposingText()
+                    if (composing.isNotEmpty()) {
+                        ic.commitText(composing, 1)
+                        sentenceBuffer.append(composing)
+                        combiner.resetJaso()
+                    }
+                    ic.finishComposingText()
+
+                    val originalSentence = sentenceBuffer.toString()
+
+                    if (originalSentence.isBlank()) return@withInputConnection
+
+                    // 백그라운드에서 맞춤법 검사 수행
+                    scope.launch {
+                        requestCorrectionFromServer(originalSentence) { corrected ->
+                            withInputConnection { innerIc ->
+                                innerIc.deleteSurroundingText(originalSentence.length, 0)
+                                innerIc.commitText(corrected, 1)
+                                sentenceBuffer.clear()
+                                sentenceBuffer.append(corrected)
+                            }
+                        }
+                    }
+
+                    return@withInputConnection
+                }
+
+                else -> {
+                    handleCharacter(text, ic)
+                }
+            }
+        }
+    }
 
     private fun requestCorrectionFromServer(
         originalText: String,
         onResult: (String) -> Unit
     ) {
-        val json = JSONObject()
-        json.put("text", originalText)
+        // 입력 검증
+        if (originalText.isBlank() || originalText.length > 1000) {
+            onResult(originalText)
+            return
+        }
+
+        val json = JSONObject().apply {
+            put("text", originalText)
+            put("timestamp", System.currentTimeMillis())
+        }
 
         val body = json.toString()
             .toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()
-            .url("http://115.23.150.161:8000/correct")
+            .url("${ServerConfig.BASE_URL}/api/v1/correct")
             .post(body)
+            .addHeader("User-Agent", "GrammaI-Android")
             .build()
 
         httpClient.newCall(request).enqueue(object : Callback {
 
             override fun onFailure(call: Call, e: IOException) {
-               // Log.e("IME_CHECK", "Network Error: ${e.message}")
-
+                Log.e("CorrectionService", "Network Error: ${e.message}")
                 mainHandler.post {
                     onResult(originalText)
                 }
             }
 
             override fun onResponse(call: Call, response: Response) {
-                val responseBody = response.body?.string()
                 val corrected = try {
-                    JSONObject(responseBody ?: "")
-                        .getString("corrected")
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            Log.w("CorrectionService", "Server returned ${resp.code}")
+                            return@use originalText
+                        }
+                        val body = resp.body?.string() ?: return@use originalText
+                        JSONObject(body).optString("corrected", originalText)
+                    }
                 } catch (e: Exception) {
+                    Log.e("CorrectionService", "Response parsing failed", e)
                     originalText
                 }
 
@@ -471,10 +454,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         })
     }
 
-
-    // -----------------------------
-    // 기능 키 처리
-    // -----------------------------
     private fun handleDelete(ic: InputConnection) {
         val composing = combiner.getComposingText()
         if (composing.isNotEmpty()) {
@@ -484,7 +463,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         }
         ic.deleteSurroundingText(1, 0)
 
-        // 🔥 STEP 3
         if (sentenceBuffer.isNotEmpty()) {
             sentenceBuffer.deleteCharAt(sentenceBuffer.length - 1)
         }
@@ -493,27 +471,18 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     private fun handleSpace(ic: InputConnection) {
         commitRemaining()
         ic.commitText(" ", 1)
-
-        // 🔥 STEP 3
         sentenceBuffer.append(" ")
     }
 
     private fun handleEnter(ic: InputConnection) {
         commitRemaining()
         ic.commitText("\n", 1)
-
-        // 🔥 STEP 3
         sentenceBuffer.append("\n")
     }
 
-
-    // -----------------------------
-    // 조합 문자 처리
-    // -----------------------------
     private fun handleCharacter(text: String, ic: InputConnection) {
         var input = text
 
-        // 1️⃣ Shift 또는 Caps Lock이 켜져 있으면 문자 변형
         if (isShifted || isCapsLock) {
             input = if (isHangulMode)
                 HangulCombiner.getShiftedHangulJaso(text)
@@ -526,7 +495,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             ic.commitText(input, 1)
             sentenceBuffer.append(input)
 
-            // 🔥 Shift 1회용 자동 해제 (Caps Lock 아닐 때)
             if (isShifted && !isCapsLock) {
                 isShifted = false
                 updateButtonText(inputView)
@@ -535,19 +503,15 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             return
         }
 
-
         val result = combiner.inputJaso(input)
         if (result.commit.isNotEmpty()) {
             ic.commitText(result.commit, 1)
-
-            // 🔥 STEP 3 (조건 안으로 이동)
             sentenceBuffer.append(result.commit)
         }
         val composingText = result.composing
         if (composingText.isNotEmpty()) ic.setComposingText(composingText, 1)
         else ic.finishComposingText()
 
-        // 3️⃣ Shift 1회용 자동 해제 (Caps Lock이 아닐 때만)
         if (isShifted && !isCapsLock) {
             isShifted = false
             updateButtonText(inputView)
@@ -555,20 +519,15 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         }
     }
 
-
-
     private fun commitRemaining() {
-        val ic = currentInputConnection ?: return
-        val remain = combiner.finishComposing()
-
-       if (remain != null) {
-            ic.commitText(remain, 1)
-
-           // 🔥 STEP 3
-           sentenceBuffer.append(remain)
+        withInputConnection { ic ->
+            val remain = combiner.finishComposing()
+            if (remain != null) {
+                ic.commitText(remain, 1)
+                sentenceBuffer.append(remain)
+            }
+            combiner.resetJaso()
         }
-
-        combiner.resetJaso()
     }
 
     private fun isSymbolKey(text: String): Boolean {
@@ -581,18 +540,12 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                 Character.UnicodeBlock.of(c) != Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
     }
 
-
-
-    // -----------------------------
-    // 버튼 텍스트 업데이트
-    // -----------------------------
     private fun updateButtonText(view: View) {
         if (view is android.view.ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)
                 if (child is LinearLayout) updateButtonText(child)
                 else if (child is Button) {
-
 
                     if (child.id in listOf(
                             R.id.key_h_delete, R.id.key_e_delete, R.id.key_s1_delete, R.id.key_s2_delete,
@@ -634,5 +587,10 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
     }
 }
