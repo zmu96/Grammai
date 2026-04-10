@@ -76,6 +76,11 @@ class HangulCombiner {
     private var jungIndex: Int = -1
     private var jongIndex: Int = 0 // 0 == 받침 없음
 
+    init {
+        // 초기화 시 JONG_FIRST_MAP의 완전성 검증
+        validateJongFirstMap()
+    }
+
     // -----------------------------------------
     private fun getCombinedChar(): Char? {
         if (choIndex != -1 && jungIndex != -1) {
@@ -108,14 +113,75 @@ class HangulCombiner {
         return if (finalText.isNotEmpty()) finalText else null
     }
 
+    /**
+     * JONG_FIRST_MAP의 완전성을 검증합니다.
+     * JONG_SPLIT_MAP에 있는 모든 키가 JONG_FIRST_MAP에도 있는지 확인합니다.
+     */
+    private fun validateJongFirstMap() {
+        val missingKeys = JONG_SPLIT_MAP.keys - JONG_FIRST_MAP.keys
+        if (missingKeys.isNotEmpty()) {
+            Log.w("HangulCombiner", "Missing JONG_FIRST_MAP entries for indices: $missingKeys")
+        }
+    }
+
+    /**
+     * 주어진 인덱스가 유효한 범위인지 검증합니다.
+     */
+    private fun isValidIndex(index: Int, mapSize: Int): Boolean {
+        return index >= 0 && index < mapSize
+    }
+
+    /**
+     * 자모 타입과 인덱스를 안전하게 반환합니다.
+     * 유효하지 않은 입력은 Triple(-1, -1, -1)을 반환합니다.
+     */
     private fun getJamoTypeAndIndex(jaso: String): Triple<Int, Int, Int> {
         if (jaso.length != 1) return Triple(-1, -1, -1)
+
         val choIdx = CHO_MAP.indexOf(jaso)
         val jungIdx = JUNG_MAP.indexOf(jaso)
         val jongIdx = JONG_MAP.indexOf(jaso)
-        if (jungIdx != -1) return Triple(TYPE_JUNG, jungIdx, -1)
-        if (choIdx != -1) return Triple(TYPE_CHO, choIdx, jongIdx)
+
+        // 모음 검사 (우선순위 높음)
+        if (isValidIndex(jungIdx, JUNG_MAP.size)) {
+            return Triple(TYPE_JUNG, jungIdx, -1)
+        }
+
+        // 자음 검사
+        if (isValidIndex(choIdx, CHO_MAP.size)) {
+            return Triple(TYPE_CHO, choIdx, jongIdx)
+        }
+
+        // 유효하지 않은 입력
         return Triple(-1, -1, -1)
+    }
+
+    /**
+     * 겹받침을 분리할 때 첫 번째 받침 인덱스를 안전하게 가져옵니다.
+     */
+    private fun getFirstJongIndex(composedJongIndex: Int): Int {
+        // JONG_FIRST_MAP에서 직접 조회
+        val firstJongIndex = JONG_FIRST_MAP[composedJongIndex]
+        if (firstJongIndex != null && isValidIndex(firstJongIndex, JONG_MAP.size)) {
+            return firstJongIndex
+        }
+
+        // 폴백: 겹받침 문자열의 첫 글자로부터 인덱스 계산
+        if (isValidIndex(composedJongIndex, JONG_MAP.size)) {
+            val composedJongChar = JONG_MAP[composedJongIndex]
+            if (composedJongChar.isNotEmpty()) {
+                val firstChar = composedJongChar.substring(0, 1)
+                val fallbackIndex = JONG_MAP.indexOf(firstChar)
+                if (isValidIndex(fallbackIndex, JONG_MAP.size)) {
+                    Log.w("HangulCombiner", "Using fallback for jong index $composedJongIndex -> $fallbackIndex")
+                    return fallbackIndex
+                }
+            }
+        }
+
+        // 최후의 폴백: 받침 없음 (0)
+        Log.e("HangulCombiner", "Failed to get first jong index for $composedJongIndex, using 0")
+        return 0
     }
 
     companion object {
@@ -177,42 +243,53 @@ class HangulCombiner {
                         // 겹받침 분리 로직 (예: '앉' + 'ㅣ' -> '안' + '지')
                         if (splitSecondJongIndex != null) {
 
-                            // 변경된 로직: JONG_FIRST_MAP을 사용하여 첫 번째 받침 인덱스를 명시적으로 가져옴
-                            val firstJongIndex = JONG_FIRST_MAP[jongIndex] ?: run {
-                                // 🚨 맵에 없을 경우 (예외 상황) 기존의 폴백 로직 사용
-                                val firstJongCharFallback = JONG_MAP[jongIndex].substring(0, 1)
-                                JONG_MAP.indexOf(firstJongCharFallback).takeIf { it >= 0 } ?: 0
-                            }
+                            // 변경된 로직: 안전한 getFirstJongIndex 함수 사용
+                            val firstJongIndex = getFirstJongIndex(jongIndex)
 
-                            // 🚨 방어 로직: 조합기 상태를 첫 번째 받침 인덱스로 변경
-                            jongIndex = firstJongIndex // 'ㄵ' (5) -> 'ㄴ' (4)로 변경
+                            // 방어 로직: 조합기 상태를 첫 번째 받침 인덱스로 변경
+                            jongIndex = firstJongIndex
 
                             // 2. '안'을 확정 글자로 계산 및 커밋 텍스트 설정 (jongIndex는 이제 정확함)
                             val committedUnicodeIndex = choIndex * JUNG_COUNT * JONG_COUNT + jungIndex * JONG_COUNT + jongIndex
                             committedText = (HANGUL_BASE + committedUnicodeIndex).toChar().toString()
 
                             // 3. 두 번째 받침 ('ㅈ', 'ㅂ' 등)을 다음 글자의 초성으로 이동 (JONG_SPLIT_MAP 사용)
-                            // ... (나머지 로직은 기존과 동일)
                             val secondJongIndex = splitSecondJongIndex
-                            val secondJongChar = JONG_MAP[secondJongIndex]
-                            val newChoIndex = CHO_MAP.indexOf(secondJongChar).takeIf { it >= 0 } ?: CHO_MAP.indexOf("ㅇ")
+                            if (isValidIndex(secondJongIndex, JONG_MAP.size)) {
+                                val secondJongChar = JONG_MAP[secondJongIndex]
+                                val newChoIndex = CHO_MAP.indexOf(secondJongChar).takeIf { it >= 0 } ?: CHO_MAP.indexOf("ㅇ")
 
-                            // 4. Combiner 상태 리셋 후 새 글자 조합 시작 ('지')
-                            resetJaso()
-                            choIndex = newChoIndex
-                            jungIndex = newIdx
+                                // 4. Combiner 상태 리셋 후 새 글자 조합 시작 ('지')
+                                resetJaso()
+                                choIndex = newChoIndex
+                                jungIndex = newIdx
+                            } else {
+                                Log.e("HangulCombiner", "Invalid second jong index: $secondJongIndex")
+                                resetJaso()
+                                choIndex = CHO_MAP.indexOf("ㅇ")
+                                jungIndex = newIdx
+                            }
 
                             return HangulInputResult(getCurrentComposingText(), committedText)
 
                         } else {
                             // 홑받침 분리 로직 (예: '간' + 'ㅣ' -> '가' + '니')
-                            val movedChoChar = JONG_MAP[jongIndex]
-                            val movedChoIndex = CHO_MAP.indexOf(movedChoChar).takeIf { it >= 0 } ?: CHO_MAP.indexOf("ㅇ")
-                            val committedUnicodeIndex = choIndex * JUNG_COUNT * JONG_COUNT + jungIndex * JONG_COUNT + 0
-                            committedText = (HANGUL_BASE + committedUnicodeIndex).toChar().toString()
-                            resetJaso()
-                            choIndex = movedChoIndex
-                            jungIndex = newIdx
+                            if (isValidIndex(jongIndex, JONG_MAP.size)) {
+                                val movedChoChar = JONG_MAP[jongIndex]
+                                val movedChoIndex = CHO_MAP.indexOf(movedChoChar).takeIf { it >= 0 } ?: CHO_MAP.indexOf("ㅇ")
+                                val committedUnicodeIndex = choIndex * JUNG_COUNT * JONG_COUNT + jungIndex * JONG_COUNT + 0
+                                committedText = (HANGUL_BASE + committedUnicodeIndex).toChar().toString()
+                                resetJaso()
+                                choIndex = movedChoIndex
+                                jungIndex = newIdx
+                            } else {
+                                Log.e("HangulCombiner", "Invalid jong index for split: $jongIndex")
+                                val committedUnicodeIndex = choIndex * JUNG_COUNT * JONG_COUNT + jungIndex * JONG_COUNT + 0
+                                committedText = (HANGUL_BASE + committedUnicodeIndex).toChar().toString()
+                                resetJaso()
+                                choIndex = CHO_MAP.indexOf("ㅇ")
+                                jungIndex = newIdx
+                            }
                             return HangulInputResult(getCurrentComposingText(), committedText)
                         }
                     } else { // jongIndex == 0 (받침이 없는 상태에서 모음 추가)
@@ -222,7 +299,7 @@ class HangulCombiner {
                             jungIndex = combined
                             return HangulInputResult(getCurrentComposingText(), "")
                         } else {
-                            // 🚨 수정된 로직 (이전 글자 확정 후 'ㅇ'을 붙여 새 글자를 만드는 표준 로직 대신, 모음 단독 커밋)
+                            // 수정된 로직 (이전 글자 확정 후 모음 단독 커밋)
 
                             // 1. 현재 조합 중인 글자(예: '가')를 확정 문자열에 추가
                             committedText = combinedChar.toString()
@@ -232,18 +309,10 @@ class HangulCombiner {
 
                             // 3. 새로 입력된 모음(예: 'ㅑ')을 모음 단독으로 확정 문자열에 추가
                             val vowelCommit = JUNG_MAP.getOrNull(newIdx) ?: jaso
-                            committedText += vowelCommit // committedText는 이제 "가ㅑ"가 됨
+                            committedText += vowelCommit
 
                             // 4. 조합 중인 텍스트 없이 (reset 했으므로) 최종 확정 문자열을 반환
                             return HangulInputResult("", committedText)
-
-                            /* // ❌ 원래 표준 IME 로직 (문제의 원인):
-                            committedText = combinedChar.toString()
-                            resetJaso()
-                            choIndex = CHO_MAP.indexOf("ㅇ") // 이 코드가 새로운 글자 '야'를 만들었음
-                            jungIndex = newIdx
-                            return HangulInputResult(getCurrentComposingText(), committedText)
-                            */
                         }
                     }
                 }
@@ -273,10 +342,10 @@ class HangulCombiner {
                     return HangulInputResult(getCurrentComposingText(), "")
                 }
                 TYPE_JUNG -> {
-                    // 🚨 이 부분은 이전처럼 모음 단독 커밋을 유지합니다. (ㅠㅠ 입력 등)
+                    // 모음 단독 커밋을 유지합니다. (ㅠㅠ 입력 등)
                     val committedText = JUNG_MAP.getOrNull(newIdx) ?: jaso
-                    resetJaso() // 조합기 상태 리셋
-                    return HangulInputResult("", committedText) // 조합 텍스트 없이 확정 문자만 반환
+                    resetJaso()
+                    return HangulInputResult("", committedText)
                 }
             }
         }
@@ -288,8 +357,7 @@ class HangulCombiner {
         if (jongIndex > 0) {
             val splitSecond = JONG_SPLIT_MAP[jongIndex]
             if (splitSecond != null) {
-                val firstJongChar = JONG_MAP[jongIndex].substring(0, 1)
-                val firstJongIndex = JONG_MAP.indexOf(firstJongChar).takeIf { it >= 0 } ?: 0
+                val firstJongIndex = getFirstJongIndex(jongIndex)
                 jongIndex = firstJongIndex
             } else {
                 jongIndex = 0
