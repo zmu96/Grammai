@@ -8,16 +8,29 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Toast
 import com.example.grammai.R
 import com.example.grammai.hangul.HangulCombiner
 
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONException
 import org.json.JSONObject
 import android.os.Handler
 import android.os.Looper
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
+
+
+data class CorrectionResponse(
+    val success: Boolean,
+    val corrected: String,
+    val error: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 
 class CorrectionImeService : InputMethodService(), View.OnClickListener {
@@ -50,6 +63,21 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     private var isShifted = false          // 기존
     private var isCapsLock = false         // 🔥 추가
     private var lastShiftTapTime = 0L      // 🔥 추가
+
+    // 네트워크 클라이언트 설정 (타임아웃 추가)
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .build()
+    
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 서버 주소 상수화
+    companion object {
+        private const val CORRECTION_SERVER = "http://115.23.150.161:8000"
+        private const val CORRECT_ENDPOINT = "/correct"
+    }
 
     // -----------------------------
     // 🔥 추가된 부분: 새 입력창 시작할 때 조합 완전 종료
@@ -90,7 +118,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
     override fun onCreate() {
         super.onCreate()
-      //  Log.d("IME_CHECK", "IME onCreate")
     }
 
     // -----------------------------
@@ -186,6 +213,10 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
         if (currentText.isEmpty()) {
             sentenceBuffer.clear()
+        } else if (sentenceBuffer.toString() != currentText) {
+            sentenceBuffer.clear()
+            sentenceBuffer.append(currentText)
+            Log.w("CorrectionService", "Buffer mismatch detected. Synced from editor.")
         }
     }
 
@@ -252,8 +283,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         val ic = currentInputConnection ?: return
 
 
-      //  Log.d("IME_CHECK", "onClick entered, id=${btn.id}")
-
         // 🔥 조합 강제 종료 추가
         if (btn.id in listOf(
                 R.id.key_h_hangul_english, R.id.key_e_hangul_english,
@@ -274,7 +303,7 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             combiner.resetJaso()
 
         }
-      //  Log.d("IME_CHECK", "BEFORE when, id=${btn.id}")
+
         when (btn.id) {
 
             R.id.key_h_shift, R.id.key_e_shift -> {
@@ -386,7 +415,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             }
 
             R.id.btn_correct -> {
-            //    Log.d("IME_CHECK", "ENTERED btn_correct branch")
                 val composing = combiner.getComposingText()
                 if (composing.isNotEmpty()) {
                     ic.commitText(composing, 1)
@@ -397,19 +425,22 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
                 val originalSentence = sentenceBuffer.toString()
 
-             //   Log.d("IME_CHECK", "SentenceBuffer='$originalSentence'")
-
                 if (originalSentence.isBlank()) return
 
-                requestCorrectionFromServer(originalSentence) { corrected ->
+                requestCorrectionFromServer(originalSentence) { response ->
+                    if (response.success) {
+                        ic.deleteSurroundingText(originalSentence.length, 0)
+                        ic.commitText(response.corrected, 1)
 
-                  //  Log.d("IME_CHECK", "Corrected result='$corrected'")
-
-                    ic.deleteSurroundingText(originalSentence.length, 0)
-                    ic.commitText(corrected, 1)
-
-                    sentenceBuffer.clear()
-                    sentenceBuffer.append(corrected)
+                        sentenceBuffer.clear()
+                        sentenceBuffer.append(response.corrected)
+                    } else {
+                        Toast.makeText(
+                            this@CorrectionImeService,
+                            "교정 실패: ${response.error}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
 
                 return
@@ -424,48 +455,91 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     }
 
     /* =====================================================
-   🔥 서버 교정 요청 함수 (여기에 그대로 붙여넣기)
+   🔥 개선된 서버 교정 요청 함수
    ===================================================== */
-
-    private val httpClient = OkHttpClient()
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     private fun requestCorrectionFromServer(
         originalText: String,
-        onResult: (String) -> Unit
+        onResult: (CorrectionResponse) -> Unit
     ) {
-        val json = JSONObject()
-        json.put("text", originalText)
+        val json = JSONObject().apply {
+            put("text", originalText)
+            put("timestamp", System.currentTimeMillis())
+        }
 
         val body = json.toString()
             .toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()
-            .url("http://115.23.150.161:8000/correct")
+            .url(CORRECTION_SERVER + CORRECT_ENDPOINT)
             .post(body)
+            .addHeader("User-Agent", "GrammaI/1.0")
             .build()
 
         httpClient.newCall(request).enqueue(object : Callback {
 
             override fun onFailure(call: Call, e: IOException) {
-               // Log.e("IME_CHECK", "Network Error: ${e.message}")
+                Log.e("CorrectionService", "Network request failed", e)
+
+                val errorMsg = when (e) {
+                    is SocketTimeoutException -> "요청 시간 초과"
+                    is ConnectException -> "서버 연결 실패"
+                    else -> "네트워크 오류: ${e.message}"
+                }
 
                 mainHandler.post {
-                    onResult(originalText)
+                    onResult(CorrectionResponse(
+                        success = false,
+                        corrected = originalText,
+                        error = errorMsg,
+                        timestamp = System.currentTimeMillis()
+                    ))
                 }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 val responseBody = response.body?.string()
-                val corrected = try {
-                    JSONObject(responseBody ?: "")
-                        .getString("corrected")
-                } catch (e: Exception) {
-                    originalText
+                val result = try {
+                    val json = JSONObject(responseBody ?: "{}")
+
+                    // ✅ HTTP 상태 코드 검증
+                    if (!response.isSuccessful) {
+                        CorrectionResponse(
+                            success = false,
+                            corrected = originalText,
+                            error = json.optString(
+                                "error",
+                                "서버 오류 (HTTP ${response.code})"
+                            ),
+                            timestamp = System.currentTimeMillis()
+                        )
+                    } else if (!json.has("corrected")) {
+                        // ✅ 응답 필드 검증
+                        CorrectionResponse(
+                            success = false,
+                            corrected = originalText,
+                            error = "응답 형식 오류",
+                            timestamp = System.currentTimeMillis()
+                        )
+                    } else {
+                        CorrectionResponse(
+                            success = true,
+                            corrected = json.getString("corrected"),
+                            timestamp = System.currentTimeMillis()
+                        )
+                    }
+                } catch (e: JSONException) {
+                    Log.e("CorrectionService", "JSON parsing failed", e)
+                    CorrectionResponse(
+                        success = false,
+                        corrected = originalText,
+                        error = "응답 파싱 오류",
+                        timestamp = System.currentTimeMillis()
+                    )
                 }
 
                 mainHandler.post {
-                    onResult(corrected)
+                    onResult(result)
                 }
             }
         })

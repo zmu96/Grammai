@@ -1,4 +1,3 @@
-// MainActivity.kt
 package com.example.grammai
 
 import android.content.Intent
@@ -41,6 +40,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
                 } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to open settings", e)
                     Toast.makeText(this@MainActivity, "설정 화면을 열 수 없습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -59,8 +59,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             setOnClickListener {
-                val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                imm.showInputMethodPicker()
+                try {
+                    val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.showInputMethodPicker()
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to show input method picker", e)
+                    Toast.makeText(this@MainActivity, "키보드 선택 화면을 열 수 없습니다.", Toast.LENGTH_SHORT).show()
+                }
             }
         }
         mainLayout.addView(selectButton)
@@ -78,20 +83,20 @@ class MainActivity : AppCompatActivity() {
         val modelFile = File(filesDir, "kot5_spellcheck_int8.onnx")
 
         if (modelFile.exists()) {
+            Log.d("MainActivity", "ONNX model already exists")
             return
         }
 
         Thread {
             try {
-
                 assets.open("kot5_spellcheck_int8.onnx").use { input ->
                     FileOutputStream(modelFile).use { output ->
                         input.copyTo(output)
                     }
                 }
-
+                Log.d("MainActivity", "ONNX model copied successfully")
             } catch (e: Exception) {
-             //   Log.e("IME_CHECK", "ONNX copy failed", e)
+                Log.e("MainActivity", "ONNX copy failed", e)
             }
         }.start()
     }
