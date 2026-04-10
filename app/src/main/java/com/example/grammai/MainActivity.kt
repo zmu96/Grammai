@@ -12,9 +12,17 @@ import androidx.appcompat.app.AppCompatActivity
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 // 이 Activity는 앱을 실행했을 때 나타나며, 사용자에게 키보드를 활성화하도록 안내합니다.
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private val modelCopyInProgress = AtomicBoolean(false)
+        private val modelCopyCompleted = AtomicBoolean(false)
+        private const val TAG = "MainActivity"
+        private const val MODEL_FILENAME = "kot5_spellcheck_int8.onnx"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +49,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
                 } catch (e: Exception) {
+                    Log.e(TAG, "Failed to open settings", e)
                     Toast.makeText(this@MainActivity, "설정 화면을 열 수 없습니다.", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -59,8 +68,17 @@ class MainActivity : AppCompatActivity() {
             }
 
             setOnClickListener {
-                val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                imm.showInputMethodPicker()
+                try {
+                    val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.showInputMethodPicker()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to show input method picker", e)
+                    Toast.makeText(
+                        this@MainActivity,
+                        "입력기 선택 화면을 열 수 없습니다.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
         mainLayout.addView(selectButton)
@@ -73,26 +91,71 @@ class MainActivity : AppCompatActivity() {
     /**
      * 🔥 앱 프로세스에서 단 1번만 ONNX 모델 복사
      * IME에서는 절대 복사하면 안 됨
+     * 
+     * 스레드 안전성을 위해 AtomicBoolean을 사용하여 동시 복사 방지
      */
     private fun copyOnnxOnce() {
-        val modelFile = File(filesDir, "kot5_spellcheck_int8.onnx")
+        val modelFile = File(filesDir, MODEL_FILENAME)
 
+        // 이미 복사 완료된 경우 즉시 반환
+        if (modelCopyCompleted.get()) {
+            return
+        }
+
+        // 이미 파일이 존재하는 경우 복사 완료로 표시
         if (modelFile.exists()) {
+            modelCopyCompleted.set(true)
+            Log.d(TAG, "ONNX model already exists: ${modelFile.absolutePath}")
+            return
+        }
+
+        // 이미 복사 중인 경우 중복 복사 방지
+        if (!modelCopyInProgress.compareAndSet(false, true)) {
+            Log.d(TAG, "ONNX model copy already in progress")
             return
         }
 
         Thread {
             try {
-
-                assets.open("kot5_spellcheck_int8.onnx").use { input ->
+                Log.d(TAG, "Starting ONNX model copy from assets")
+                
+                assets.open(MODEL_FILENAME).use { input ->
                     FileOutputStream(modelFile).use { output ->
                         input.copyTo(output)
                     }
                 }
 
+                modelCopyCompleted.set(true)
+                Log.d(TAG, "ONNX model copied successfully to: ${modelFile.absolutePath}")
+                
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Security exception while copying ONNX model", e)
+                modelCopyInProgress.set(false)
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "Illegal state exception while copying ONNX model", e)
+                modelCopyInProgress.set(false)
+            } catch (e: java.io.FileNotFoundException) {
+                Log.e(TAG, "ONNX model file not found in assets", e)
+                modelCopyInProgress.set(false)
+            } catch (e: java.io.IOException) {
+                Log.e(TAG, "IO exception while copying ONNX model", e)
+                modelCopyInProgress.set(false)
+                // 부분적으로 복사된 파일 삭제
+                if (modelFile.exists()) {
+                    try {
+                        modelFile.delete()
+                        Log.d(TAG, "Deleted incomplete model file")
+                    } catch (deleteException: Exception) {
+                        Log.e(TAG, "Failed to delete incomplete model file", deleteException)
+                    }
+                }
             } catch (e: Exception) {
-             //   Log.e("IME_CHECK", "ONNX copy failed", e)
+                Log.e(TAG, "Unexpected exception while copying ONNX model", e)
+                modelCopyInProgress.set(false)
             }
+        }.apply {
+            name = "OnnxModelCopyThread"
+            isDaemon = true
         }.start()
     }
 }

@@ -5,7 +5,6 @@ import android.util.Log
 // Jamo 타입 정의
 private const val TYPE_CHO = 0 // 초성
 private const val TYPE_JUNG = 1 // 중성
-private const val TYPE_JONG = 2 // 종성 (사용시 참고용)
 
 // 한글 유니코드 기초 값 및 카운트
 private const val HANGUL_BASE = 0xAC00
@@ -180,7 +179,7 @@ class HangulCombiner {
                             // 변경된 로직: JONG_FIRST_MAP을 사용하여 첫 번째 받침 인덱스를 명시적으로 가져옴
                             val firstJongIndex = JONG_FIRST_MAP[jongIndex] ?: run {
                                 // 🚨 맵에 없을 경우 (예외 상황) 기존의 폴백 로직 사용
-                                val firstJongCharFallback = JONG_MAP[jongIndex].substring(0, 1)
+                                val firstJongCharFallback = JONG_MAP.getOrNull(jongIndex)?.substring(0, 1) ?: ""
                                 JONG_MAP.indexOf(firstJongCharFallback).takeIf { it >= 0 } ?: 0
                             }
 
@@ -194,7 +193,7 @@ class HangulCombiner {
                             // 3. 두 번째 받침 ('ㅈ', 'ㅂ' 등)을 다음 글자의 초성으로 이동 (JONG_SPLIT_MAP 사용)
                             // ... (나머지 로직은 기존과 동일)
                             val secondJongIndex = splitSecondJongIndex
-                            val secondJongChar = JONG_MAP[secondJongIndex]
+                            val secondJongChar = JONG_MAP.getOrNull(secondJongIndex) ?: ""
                             val newChoIndex = CHO_MAP.indexOf(secondJongChar).takeIf { it >= 0 } ?: CHO_MAP.indexOf("ㅇ")
 
                             // 4. Combiner 상태 리셋 후 새 글자 조합 시작 ('지')
@@ -206,7 +205,7 @@ class HangulCombiner {
 
                         } else {
                             // 홑받침 분리 로직 (예: '간' + 'ㅣ' -> '가' + '니')
-                            val movedChoChar = JONG_MAP[jongIndex]
+                            val movedChoChar = JONG_MAP.getOrNull(jongIndex) ?: ""
                             val movedChoIndex = CHO_MAP.indexOf(movedChoChar).takeIf { it >= 0 } ?: CHO_MAP.indexOf("ㅇ")
                             val committedUnicodeIndex = choIndex * JUNG_COUNT * JONG_COUNT + jungIndex * JONG_COUNT + 0
                             committedText = (HANGUL_BASE + committedUnicodeIndex).toChar().toString()
@@ -288,7 +287,7 @@ class HangulCombiner {
         if (jongIndex > 0) {
             val splitSecond = JONG_SPLIT_MAP[jongIndex]
             if (splitSecond != null) {
-                val firstJongChar = JONG_MAP[jongIndex].substring(0, 1)
+                val firstJongChar = JONG_MAP.getOrNull(jongIndex)?.substring(0, 1) ?: ""
                 val firstJongIndex = JONG_MAP.indexOf(firstJongChar).takeIf { it >= 0 } ?: 0
                 jongIndex = firstJongIndex
             } else {
@@ -310,3 +309,4 @@ class HangulCombiner {
         }
     }
 }
+```
