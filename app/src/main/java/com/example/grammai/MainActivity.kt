@@ -73,25 +73,45 @@ class MainActivity : AppCompatActivity() {
     /**
      * 🔥 앱 프로세스에서 단 1번만 ONNX 모델 복사
      * IME에서는 절대 복사하면 안 됨
+     * ✅ 개선: 원자적 연산으로 동시성 제어 추가
      */
     private fun copyOnnxOnce() {
         val modelFile = File(filesDir, "kot5_spellcheck_int8.onnx")
 
+        // 이미 존재하면 조기 종료
         if (modelFile.exists()) {
+            Log.d("MainActivity", "ONNX model already exists")
             return
         }
 
         Thread {
             try {
+                // 임시 파일에 먼저 쓰고 원자적으로 이동
+                val tempFile = File(filesDir, ".${modelFile.name}.tmp")
 
                 assets.open("kot5_spellcheck_int8.onnx").use { input ->
-                    FileOutputStream(modelFile).use { output ->
+                    FileOutputStream(tempFile).use { output ->
                         input.copyTo(output)
                     }
                 }
 
+                // ✅ 원자적 이동 (파일 시스템 지원 시)
+                val renamed = tempFile.renameTo(modelFile)
+                if (renamed) {
+                    Log.d("MainActivity", "ONNX model copied successfully")
+                } else {
+                    Log.e("MainActivity", "Failed to rename temp file to model file")
+                    tempFile.delete()
+                }
+
+            } catch (e: IOException) {
+                Log.e("MainActivity", "Failed to copy ONNX model: ${e.message}", e)
+                val tempFile = File(filesDir, ".kot5_spellcheck_int8.onnx.tmp")
+                if (tempFile.exists()) {
+                    tempFile.delete()
+                }
             } catch (e: Exception) {
-             //   Log.e("IME_CHECK", "ONNX copy failed", e)
+                Log.e("MainActivity", "Unexpected error during ONNX copy: ${e.message}", e)
             }
         }.start()
     }
