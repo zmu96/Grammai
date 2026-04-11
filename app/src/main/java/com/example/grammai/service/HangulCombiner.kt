@@ -76,6 +76,10 @@ class HangulCombiner {
     private var jungIndex: Int = -1
     private var jongIndex: Int = 0 // 0 == 받침 없음
 
+    companion object {
+        private const val TAG = "HangulCombiner"
+    }
+
     // -----------------------------------------
     private fun getCombinedChar(): Char? {
         if (choIndex != -1 && jungIndex != -1) {
@@ -109,12 +113,33 @@ class HangulCombiner {
     }
 
     private fun getJamoTypeAndIndex(jaso: String): Triple<Int, Int, Int> {
-        if (jaso.length != 1) return Triple(-1, -1, -1)
+        // 입력 검증: 빈 문자열 또는 길이가 1이 아닌 경우
+        if (jaso.isEmpty()) {
+            Log.w(TAG, "Empty jaso input")
+            return Triple(-1, -1, -1)
+        }
+        
+        if (jaso.length > 1) {
+            Log.w(TAG, "Invalid jaso length: '${jaso}' (length: ${jaso.length})")
+            return Triple(-1, -1, -1)
+        }
+        
         val choIdx = CHO_MAP.indexOf(jaso)
         val jungIdx = JUNG_MAP.indexOf(jaso)
         val jongIdx = JONG_MAP.indexOf(jaso)
-        if (jungIdx != -1) return Triple(TYPE_JUNG, jungIdx, -1)
-        if (choIdx != -1) return Triple(TYPE_CHO, choIdx, jongIdx)
+        
+        // 중성(모음) 확인
+        if (jungIdx != -1) {
+            return Triple(TYPE_JUNG, jungIdx, -1)
+        }
+        
+        // 초성(자음) 확인
+        if (choIdx != -1) {
+            return Triple(TYPE_CHO, choIdx, jongIdx)
+        }
+        
+        // 알려지지 않은 자모
+        Log.w(TAG, "Unknown jaso: '$jaso' (Unicode: ${jaso.codePointAt(0)})")
         return Triple(-1, -1, -1)
     }
 
