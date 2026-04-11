@@ -32,3 +32,20 @@ val Typography = Typography(
     )
     */
 )
+
+// IME 키보드 관련 타이포그래피
+val KeyboardKeyTypography = TextStyle(
+    fontFamily = FontFamily.Default,
+    fontWeight = FontWeight.Medium,
+    fontSize = 14.sp,
+    lineHeight = 20.sp,
+    letterSpacing = 0.sp
+)
+
+val KeyboardLabelTypography = TextStyle(
+    fontFamily = FontFamily.Default,
+    fontWeight = FontWeight.Normal,
+    fontSize = 12.sp,
+    lineHeight = 16.sp,
+    letterSpacing = 0.sp
+)

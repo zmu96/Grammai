@@ -8,6 +8,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Toast
 import com.example.grammai.R
 import com.example.grammai.hangul.HangulCombiner
 
@@ -18,6 +19,9 @@ import org.json.JSONObject
 import android.os.Handler
 import android.os.Looper
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
 
 
 class CorrectionImeService : InputMethodService(), View.OnClickListener {
@@ -51,6 +55,42 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     private var isCapsLock = false         // 🔥 추가
     private var lastShiftTapTime = 0L      // 🔥 추가
 
+    companion object {
+        private const val CONNECT_TIMEOUT_SECONDS = 5L
+        private const val READ_TIMEOUT_SECONDS = 8L
+        private const val WRITE_TIMEOUT_SECONDS = 5L
+        private const val DOUBLE_TAP_DELAY = 400L
+        private const val TAG = "IME_CORRECTION"
+    }
+
+    // 🔥 추가: BuildConfig를 통한 동적 서버 URL 설정
+    private fun getServerUrl(): String {
+        return try {
+            val clazz = Class.forName("com.example.grammai.BuildConfig")
+            val field = clazz.getField("API_BASE_URL")
+            field.get(null) as String
+        } catch (e: Exception) {
+            // BuildConfig가 없으면 기본값 사용 (개발 환경)
+            "http://localhost:8000"
+        }
+    }
+
+    // 🔥 추가: 타임아웃 설정이 포함된 OkHttpClient
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 🔥 추가: 입력창 종료 시 네트워크 요청 정리
+    override fun onDestroy() {
+        super.onDestroy()
+        httpClient.dispatcher.cancelAll()
+    }
+
     // -----------------------------
     // 🔥 추가된 부분: 새 입력창 시작할 때 조합 완전 종료
     // -----------------------------
@@ -60,6 +100,7 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         val ic = currentInputConnection ?: return
         ic.finishComposingText()
         combiner.resetJaso()
+        syncSentenceBufferWithEditor()
     }
 
     // -----------------------------
@@ -85,6 +126,7 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         val ic = currentInputConnection
         ic?.finishComposingText()
         combiner.resetJaso()
+        syncSentenceBufferWithEditor()
     }
 
 
@@ -175,17 +217,29 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     }
 
 
+    // 🔥 개선: 입력창의 실제 텍스트와 sentenceBuffer를 동기화
     private fun syncSentenceBufferWithEditor() {
         val ic = currentInputConnection ?: return
-        val extracted = ic.getExtractedText(
-            android.view.inputmethod.ExtractedTextRequest(),
-            0
-        ) ?: return
+        try {
+            val extracted = ic.getExtractedText(
+                android.view.inputmethod.ExtractedTextRequest(),
+                0
+            ) ?: return
 
-        val currentText = extracted.text?.toString() ?: ""
+            val currentText = extracted.text?.toString() ?: ""
 
-        if (currentText.isEmpty()) {
-            sentenceBuffer.clear()
+            if (currentText.isEmpty()) {
+                sentenceBuffer.clear()
+            } else {
+                // 버퍼와 실제 텍스트가 다르면 재동기화
+                if (sentenceBuffer.toString() != currentText) {
+                    sentenceBuffer.clear()
+                    sentenceBuffer.append(currentText)
+                    Log.d(TAG, "Buffer synced with editor: '$currentText'")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing buffer with editor", e)
         }
     }
 
@@ -280,7 +334,6 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             R.id.key_h_shift, R.id.key_e_shift -> {
 
                 val now = System.currentTimeMillis()
-                val DOUBLE_TAP_DELAY = 400L
 
                 // 🔒 1. Caps Lock ON → Shift 누르면 Caps Lock OFF
                 if (isCapsLock) {
@@ -401,16 +454,21 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
 
                 if (originalSentence.isBlank()) return
 
-                requestCorrectionFromServer(originalSentence) { corrected ->
+                requestCorrectionFromServer(originalSentence,
+                    onResult = { corrected ->
+                      //  Log.d("IME_CHECK", "Corrected result='$corrected'")
 
-                  //  Log.d("IME_CHECK", "Corrected result='$corrected'")
+                        ic.deleteSurroundingText(originalSentence.length, 0)
+                        ic.commitText(corrected, 1)
 
-                    ic.deleteSurroundingText(originalSentence.length, 0)
-                    ic.commitText(corrected, 1)
-
-                    sentenceBuffer.clear()
-                    sentenceBuffer.append(corrected)
-                }
+                        sentenceBuffer.clear()
+                        sentenceBuffer.append(corrected)
+                    },
+                    onError = { error ->
+                        Log.e(TAG, "Correction failed: $error")
+                        showToast(error)
+                    }
+                )
 
                 return
             }
@@ -424,15 +482,13 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
     }
 
     /* =====================================================
-   🔥 서버 교정 요청 함수 (여기에 그대로 붙여넣기)
+   🔥 개선된 서버 교정 요청 함수
    ===================================================== */
-
-    private val httpClient = OkHttpClient()
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     private fun requestCorrectionFromServer(
         originalText: String,
-        onResult: (String) -> Unit
+        onResult: (String) -> Unit,
+        onError: (String) -> Unit = {}
     ) {
         val json = JSONObject()
         json.put("text", originalText)
@@ -441,26 +497,65 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
             .toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()
-            .url("http://115.23.150.161:8000/correct")
+            .url("${getServerUrl()}/correct")  // 🔥 동적 URL 사용
             .post(body)
             .build()
 
         httpClient.newCall(request).enqueue(object : Callback {
 
             override fun onFailure(call: Call, e: IOException) {
-               // Log.e("IME_CHECK", "Network Error: ${e.message}")
+                Log.e(TAG, "Network Error: ${e.message}", e)
+
+                val errorMsg = when (e) {
+                    is SocketTimeoutException -> "요청 시간 초과 (${e.message})"
+                    is ConnectException -> "서버에 연결할 수 없습니다"
+                    else -> "네트워크 오류: ${e.message}"
+                }
 
                 mainHandler.post {
+                    onError(errorMsg)
                     onResult(originalText)
                 }
             }
 
             override fun onResponse(call: Call, response: Response) {
-                val responseBody = response.body?.string()
                 val corrected = try {
-                    JSONObject(responseBody ?: "")
-                        .getString("corrected")
+                    when {
+                        !response.isSuccessful -> {
+                            Log.w(TAG, "Server error: ${response.code}")
+                            val errorMsg = response.body?.string() ?: "Unknown error"
+                            Log.e(TAG, "Server response: $errorMsg")
+                            mainHandler.post {
+                                onError("서버 오류: ${response.code}")
+                            }
+                            originalText
+                        }
+                        response.body == null -> {
+                            Log.e(TAG, "Empty response body")
+                            mainHandler.post {
+                                onError("서버 응답이 비어있습니다")
+                            }
+                            originalText
+                        }
+                        else -> {
+                            val responseBody = response.body!!.string()
+                            try {
+                                JSONObject(responseBody)
+                                    .getString("corrected")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "JSON parsing failed: ${e.message}", e)
+                                mainHandler.post {
+                                    onError("응답 형식 오류")
+                                }
+                                originalText
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
+                    Log.e(TAG, "Unexpected error: ${e.message}", e)
+                    mainHandler.post {
+                        onError("예상치 못한 오류 발생")
+                    }
                     originalText
                 }
 
@@ -469,6 +564,13 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
                 }
             }
         })
+    }
+
+    // 🔥 추가: 사용자 피드백 토스트 메시지
+    private fun showToast(message: String) {
+        mainHandler.post {
+            Toast.makeText(this@CorrectionImeService, message, Toast.LENGTH_SHORT).show()
+        }
     }
 
 
@@ -484,7 +586,7 @@ class CorrectionImeService : InputMethodService(), View.OnClickListener {
         }
         ic.deleteSurroundingText(1, 0)
 
-        // 🔥 STEP 3
+        // 🔥 STEP 3: 버퍼 동기화
         if (sentenceBuffer.isNotEmpty()) {
             sentenceBuffer.deleteCharAt(sentenceBuffer.length - 1)
         }
